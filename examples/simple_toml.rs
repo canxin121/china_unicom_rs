@@ -1,107 +1,108 @@
+use std::{sync::LazyLock, time::Duration};
+
 use anyhow::Result;
-use china_unicom_rs::{data::ChinaUnicomData, query::query_china_unicom_data, CLIENT};
-use serde::Deserialize;
-use tokio::time::Duration;
+use china_unicom_rs::{data::ChinaUnicomData, query::query_china_unicom_data};
+use chrono::TimeDelta;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
 
-#[derive(Debug, Deserialize)]
-struct Config {
-    // 认证配置
-    auth: AuthConfig,
-    // 应用程序配置
-    #[serde(default)]
-    app: AppConfig,
-}
-
-// Authentication Config struct
-#[derive(Debug, Deserialize)]
-struct AuthConfig {
-    // 中国联通 余量请求中的 Cookie
-    cookie: String,
-    // Bark 推送 Key
-    key: String,
-}
-
-// Application Config struct
-#[derive(Debug, Deserialize)]
-struct AppConfig {
-    // 缓存文件路径 默认值为 "./china_unicom_data.json"
-    #[serde(default = "default_cache_file")]
-    cache_file: String,
-    // 查询间隔(s) 默认值为 30
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Config {
+    // 中国联通cookie
+    pub cookie: String,
+    // bark key
+    pub key: String,
+    // 请求间隔(s)
     #[serde(default = "default_interval")]
-    interval: u64,
-    // 查询超时时间(s) 默认值为 30
+    pub interval: u64,
+    // 免费用量阈值(G)
+    #[serde(default)]
+    pub free_threshold: Option<f64>,
+    // 收费用量阈值(G)
+    #[serde(default = "default_non_threshold")]
+    pub non_threshold: Option<f64>,
+    // 发送超时(s)(即使未到阈值，超出此时间也会发送)
     #[serde(default = "default_timeout")]
-    timeout: i64,
-
-    // 消息格式
-    #[serde(default = "default_message_format")]
-    message_format: String,
-    // 首次消息格式
-    #[serde(default = "default_first_message_format")]
-    first_message_format: String,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            cache_file: default_cache_file(),
-            interval: default_interval(),
-            timeout: default_timeout(),
-            message_format: default_message_format(),
-            first_message_format: default_first_message_format(),
-        }
-    }
-}
-
-// Default values for AppConfig fields
-fn default_cache_file() -> String {
-    "./china_unicom_data.json".to_string()
+    pub timeout: Option<i64>,
 }
 
 fn default_interval() -> u64 {
-    30
+    60
 }
 
-fn default_timeout() -> i64 {
-    30
+fn default_non_threshold() -> Option<f64> {
+    Some(0.05)
 }
 
-// Default values for MessageFormat fields
-fn default_message_format() -> String {
-    "[区间时长] 跳[区间流量收费用量] 免[区间流量免费用量]%0a通用余[流量通用余量] 定向余[流量定向余量]".to_string()
+fn default_timeout() -> Option<i64> {
+    Some(1800)
 }
 
-fn default_first_message_format() -> String {
-    "通用总:[流量通用总量] 定向总:[流量定向总量]%0a通用余:[流量通用余量] 定向余:[流量定向余量]"
-        .to_string()
+const FORMAT1: &'static str = "[区间时长] 跳: [区间流量收费用量], 免: [区间流量免费用量]";
+
+const FORMAT2: &'static str = "今跳:[区间流量收费用量], 今免: [区间流量免费用量]";
+
+const FORMAT3: &'static str = "通用余: [流量通用余量], 定向余: [流量定向余量]";
+
+const FORMAT4: &'static str = "通用已用: [流量通用用量], 定向已用: [流量定向用量]";
+
+static CLIENT: LazyLock<Client> = LazyLock::new(|| Client::new());
+
+fn format_cachefile_name(date: chrono::NaiveDate) -> String {
+    date.format("china_unicom_%Y-%m-%d.json").to_string()
 }
 
-async fn load_config() -> Result<Config> {
-    let config_content = tokio::fs::read_to_string("config.toml").await?;
-    let config: Config = toml::from_str(&config_content)?;
+fn load_config() -> Result<Config> {
+    let config = std::fs::read_to_string("config.toml")?;
+    let config: Config = toml::from_str(&config)?;
     Ok(config)
 }
 
-pub async fn save_data(data: &ChinaUnicomData, cache_file: &str) -> Result<()> {
-    let json = serde_json::to_string(data)?;
-    tokio::fs::write(cache_file, json).await?;
+async fn load_data(date: chrono::NaiveDate) -> Result<ChinaUnicomData> {
+    let file_name = format_cachefile_name(date);
+    let data = tokio::fs::read_to_string(file_name).await?;
+    let data: ChinaUnicomData = serde_json::from_str(&data)?;
+    Ok(data)
+}
+
+async fn save_data(data: &ChinaUnicomData) -> Result<()> {
+    let date = data.time.date_naive();
+    let file_name = format_cachefile_name(date);
+    let data = serde_json::to_string(data)?;
+    tokio::fs::write(file_name, data).await?;
     Ok(())
 }
 
-pub async fn load_data(cache_file: &str) -> Option<ChinaUnicomData> {
-    if let Ok(json) = tokio::fs::read_to_string(cache_file).await {
-        if let Ok(data) = serde_json::from_str(&json) {
-            Some(data)
-        } else {
-            None
-        }
+async fn format_message(data: &ChinaUnicomData, lastdata: &ChinaUnicomData) -> Result<String> {
+    let mut message = data.format_with_last(&FORMAT1, lastdata)?;
+    message += "%0a";
+    let yesterday = data.time.date_naive() - chrono::Duration::days(1);
+    if let Ok(yesterday_data) = load_data(yesterday).await {
+        message += &data.format_with_last(&FORMAT2, &yesterday_data)?;
+        message += "%0a";
     } else {
-        None
-    }
+        message += &data.format(&FORMAT4)?;
+        message += "%0a";
+    };
+    message += &data.format(&FORMAT3)?;
+    Ok(message)
 }
 
-pub async fn notify(bark_push_key: &str, title: &str, message: &str) -> Result<()> {
+async fn format_first_message(data: &ChinaUnicomData) -> Result<String> {
+    let mut message = data.format(&FORMAT3)?;
+    message += "%0a";
+    message += &data.format(&FORMAT4)?;
+    let yesterday = data.time.date_naive() - chrono::Duration::days(1);
+    if let Ok(yesterday_data) = load_data(yesterday).await {
+        message += "%0a";
+        message += &data.format_with_last(&FORMAT2, &yesterday_data)?;
+    };
+    Ok(message)
+}
+
+async fn notify(bark_push_key: &str, title: &str, message: &str) -> Result<()> {
+    println!("发送消息: [{}]-({})", title, message);
     let resp = CLIENT
         .post(format!(
             "https://api.day.app/{}/{}/{}",
@@ -114,115 +115,96 @@ pub async fn notify(bark_push_key: &str, title: &str, message: &str) -> Result<(
     Ok(())
 }
 
+fn should_notify(config: &Config, data: &ChinaUnicomData, lastdata: &ChinaUnicomData) -> bool {
+    if let Some(timeout) = config.timeout {
+        if data.time - lastdata.time >= TimeDelta::seconds(timeout) {
+            return true;
+        }
+    } else if let Some(free_threshold) = config.free_threshold {
+        if data.free_flow_used - lastdata.free_flow_used >= free_threshold {
+            return true;
+        }
+    } else if let Some(nonfree_threshold) = config.non_threshold {
+        if data.non_free_flow_used - lastdata.non_free_flow_used >= nonfree_threshold {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 首先获取一个新的数据，然后减去上次获取(第一次没有)，以及昨日获取(必有)
+
 #[tokio::main]
 async fn main() {
-    let config = load_config().await.expect("Failed to load configuration");
+    let config = load_config().unwrap();
     println!("Run with config: {:#?}", config);
-
-    let mut max_query_retry = 3;
-
-    let cached_data = load_data(&config.app.cache_file).await;
-
-    let mut last_data = match query_china_unicom_data(&config.auth.cookie).await {
-        Ok(data) => data,
-        Err(err) => {
-            let _ = notify(
-                &config.auth.key,
-                "联通余量",
-                &format!("Failed to query initial data: {:?}", err),
-            )
-            .await;
-            panic!("Failed to query initial data: {:?}, Abort!", err);
+    let mut last_data = {
+        match load_data(chrono::Local::now().naive_local().into()).await {
+            Err(_) => {
+                let data = query_china_unicom_data(&config.cookie).await.unwrap();
+                match format_first_message(&data).await {
+                    Ok(message) => {
+                        let _ = notify(&config.key, &data.package_name, &message).await;
+                    }
+                    Err(e) => {
+                        let _ =
+                            notify(&config.key, "联通余量", &format!("格式化消息出错: {e}")).await;
+                    }
+                }
+                data
+            }
+            Ok(data) => data,
         }
     };
 
-    if let Err(e) = save_data(&last_data, &config.app.cache_file).await {
-        let _ = notify(
-            &config.auth.key,
-            "联通余量",
-            &format!("Failed to save initial data: {:?}", e),
-        )
-        .await;
-        panic!("Failed to save initial data: {:?}, Abort!", e);
-    }
-
-    let first_message_result = match &cached_data {
-        Some(data) => {
-            println!("Formatting first message with cached data...");
-            last_data.format_with_last(&config.app.message_format, &data)
-        }
-        None => {
-            println!("No cached data found. Formatting first message with initial data...");
-            last_data.format(&config.app.first_message_format)
-        }
-    };
-
-    match first_message_result {
-        Ok(message) => {
-            let _ = notify(&config.auth.key, &last_data.package_name, &message).await;
-        }
-        Err(err) => {
-            let _ = notify(
-                &config.auth.key,
-                "联通余量",
-                &format!("Failed to format first message: {:?}, Abort!", err),
-            )
-            .await;
-            panic!("Failed to format first message: {:?}, Abort!", err);
-        }
-    }
-
-    let interval = Duration::from_secs(config.app.interval);
-    let timeout = chrono::Duration::seconds(config.app.timeout);
+    let mut max_retry = 3;
+    let interval = Duration::from_secs(config.interval);
 
     loop {
-        tokio::time::sleep(interval).await;
-
-        match query_china_unicom_data(&config.auth.cookie).await {
-            Ok(data) => {
-                if let Ok(message) = data.format_with_last(&config.app.message_format, &last_data) {
+        match query_china_unicom_data(&config.cookie).await {
+            Ok(data) => match format_message(&data, &last_data).await {
+                Ok(message) => {
                     println!("{}", message);
-                    if data.non_free_flow_used - last_data.non_free_flow_used > 0.2
-                        || data.free_flow_used - last_data.free_flow_used > 1.0
-                        || data.time - last_data.time >= timeout
-                    {
-                        let _ = notify(&config.auth.key, &data.package_name, &message).await;
+                    max_retry = 3;
+                    if should_notify(&config, &data, &last_data) {
+                        let _ = notify(&config.key, &data.package_name, &message).await;
 
-                        if let Err(err) = save_data(&data, &config.app.cache_file).await {
-                            let _ = notify(
-                                &config.auth.key,
-                                "联通余量",
-                                &format!("Failed to save data: {:?}", err),
-                            )
-                            .await;
-                        }
+                        if let Err(e) = save_data(&data).await {
+                            let _ = notify(&config.key, "联通余量", &format!("缓存出错:{e}")).await;
+                        };
 
                         last_data = data;
                     }
                 }
-            }
-            Err(err) => {
-                max_query_retry -= 1;
-                println!(
-                    "Failed to query data: {:?}. Retries left: {}",
-                    err, max_query_retry
-                );
-                if max_query_retry < 0 {
+                Err(e) => {
+                    if max_retry == 0 {
+                        let _ = notify(
+                            &config.key,
+                            "联通余量",
+                            &format!("格式化消息失败: {}%0a失败次数过多, 程序退出", e),
+                        )
+                        .await;
+                        panic!()
+                    }
+                    max_retry -= 1;
+                    let _ =
+                        notify(&config.key, "联通余量", &format!("格式化消息失败: {}", e)).await;
+                }
+            },
+            Err(e) => {
+                if max_retry == 0 {
                     let _ = notify(
-                        &config.auth.key,
+                        &config.key,
                         "联通余量",
-                        &format!("Failed to query data: {:?}%0aMax Retry exceed, Abort!", err),
+                        &format!("获取数据失败: {}%0a失败次数过多, 程序退出", e),
                     )
                     .await;
-                    panic!("Failed to query data: {:?}\nMax Retry exceed, Abort!", err);
+                    panic!()
                 }
-                let _ = notify(
-                    &config.auth.key,
-                    "联通余量",
-                    &format!("Failed to query data: {:?}", err),
-                )
-                .await;
+                max_retry -= 1;
+                let _ = notify(&config.key, "联通余量", &format!("获取数据失败: {}", e)).await;
             }
         }
+        sleep(interval).await;
     }
 }
