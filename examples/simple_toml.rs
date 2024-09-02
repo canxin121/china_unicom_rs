@@ -120,11 +120,13 @@ fn should_notify(config: &Config, data: &ChinaUnicomData, lastdata: &ChinaUnicom
         if data.time - lastdata.time >= TimeDelta::seconds(timeout) {
             return true;
         }
-    } else if let Some(free_threshold) = config.free_threshold {
+    }
+    if let Some(free_threshold) = config.free_threshold {
         if data.free_flow_used - lastdata.free_flow_used >= free_threshold {
             return true;
         }
-    } else if let Some(nonfree_threshold) = config.non_threshold {
+    }
+    if let Some(nonfree_threshold) = config.non_threshold {
         if data.non_free_flow_used - lastdata.non_free_flow_used >= nonfree_threshold {
             return true;
         }
