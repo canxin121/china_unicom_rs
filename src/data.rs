@@ -1,15 +1,15 @@
 use crate::{format_duration, DATETIME_FORMAT, DEFAULT_FORMAT, DEFAULT_FORMAT_WITH_LAST};
 use aho_corasick::AhoCorasick;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChinaUnicomData {
     // 套餐名称
     pub package_name: String,
-    // 查询时间
-    pub time: DateTime<Utc>,
+    // 查pub
+    pub time: DateTime<Local>,
 
     // 已用流量
     pub sum_flow_used: f64,
@@ -22,7 +22,7 @@ pub struct ChinaUnicomData {
     // 已用非免费流量
     pub non_free_flow_used: f64,
 
-    // 总流量
+    // 总
     pub sum_flow: f64,
     // 总定向流量
     pub limit_flow: f64,

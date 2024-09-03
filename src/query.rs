@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::Local;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, COOKIE, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 
@@ -224,7 +224,7 @@ impl ChinaUnicomResponse {
 
         ChinaUnicomData {
             package_name: self.package_name.clone(),
-            time: Utc::now(),
+            time: Local::now(),
             sum_flow_used,
             free_flow_used,
             non_free_flow_used,
