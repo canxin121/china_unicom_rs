@@ -237,12 +237,12 @@ impl ChinaUnicomData {
     pub fn format_with_last(&self, fmt: &str, last: &Self) -> Result<String> {
         let duration = self.time - last.time;
         let duration_str = format_duration(duration);
-        let sum_flow_used = self.sum_flow_used - last.sum_flow_used;
-        let free_flow_used = self.free_flow_used - last.free_flow_used;
-        let non_free_flow_used = self.non_free_flow_used - last.non_free_flow_used;
-        let sum_voice_used = self.sum_voice_used - last.sum_voice_used;
-        let limit_voice_used = self.limit_voice_used - last.limit_voice_used;
-        let non_limit_voice_used = self.non_limit_voice_used - last.non_limit_voice_used;
+        let sum_flow_used = (self.sum_flow_used - last.sum_flow_used).max(0.0);
+        let free_flow_used = (self.free_flow_used - last.free_flow_used).max(0.0);
+        let non_free_flow_used = (self.non_free_flow_used - last.non_free_flow_used).max(0.0);
+        let sum_voice_used = (self.sum_voice_used - last.sum_voice_used).max(0);
+        let limit_voice_used = (self.limit_voice_used - last.limit_voice_used).max(0);
+        let non_limit_voice_used = (self.non_limit_voice_used - last.non_limit_voice_used).max(0);
 
         let patterns = &[
             "[区间时长]",
