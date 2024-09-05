@@ -5,6 +5,7 @@ use reqwest::Client;
 
 pub mod data;
 pub mod query;
+pub mod online;
 
 pub const CLIENT: LazyCell<Client> = LazyCell::new(|| Client::new());
 
